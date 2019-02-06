@@ -1,0 +1,33 @@
+name:           dhall-flycheck
+version:        0.1.0
+build-type:     Simple
+cabal-version:  >= 1.10
+license:        BSD3
+license-file:   LICENSE
+                
+library
+  exposed-modules:
+      Dhall.Flycheck
+      Dhall.Flycheck.ImportLocation
+  hs-source-dirs:
+      src
+  ghc-options: -Wall
+  build-depends:
+      base
+    , dhall
+    , megaparsec
+    , text
+    , containers
+    , aeson
+    , bytestring
+    , prettyprinter
+    , mtl
+  default-language: Haskell2010
+
+executable dhall-flycheck
+  main-is: Main.hs
+  ghc-options: -Wall
+  build-depends:
+      base
+    , dhall-flycheck
+  default-language: Haskell2010
