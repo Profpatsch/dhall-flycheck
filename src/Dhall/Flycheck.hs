@@ -1,4 +1,4 @@
-{-# language NamedFieldPuns, OverloadedStrings #-}
+{-# language NamedFieldPuns, OverloadedStrings, LambdaCase #-}
 module Dhall.Flycheck where
 
 import qualified Dhall.Core
@@ -6,7 +6,10 @@ import qualified Dhall.Import
 import qualified Dhall.Parser
 import qualified Dhall.TypeCheck
 import qualified Data.Text.IO
+import qualified Data.Text.Encoding
 import qualified System.Environment
+import qualified System.IO as SIO
+import qualified System.Exit
 import qualified Text.Megaparsec
 import qualified Text.Megaparsec.Error
 import qualified Text.Megaparsec.Pos
@@ -15,7 +18,7 @@ import Data.Text (Text)
 import qualified Data.Text
 import Data.Foldable
 import Data.Bifunctor (first, bimap)
-import Control.Monad.Except (ExceptT(..), runExceptT)
+import Control.Monad.Except (ExceptT(..), runExceptT, forever)
 import qualified Control.Exception
 import qualified Data.Sequence
 import Data.Sequence (Seq)
@@ -23,6 +26,8 @@ import Data.Void
 import qualified Data.Aeson as Json
 import qualified Data.Aeson.Encoding as Json
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString.Lazy.Char8 as LBSC
+import qualified Data.ByteString as BS
 
 data ParseError = ParseError
   { parseErrorPos :: Text.Megaparsec.Pos.SourcePos
@@ -37,6 +42,12 @@ data EditorError = EditorError
   { editorPos :: Text.Megaparsec.Pos.SourcePos
   , editorMessage :: Text
   }
+
+editorErrorNoPos :: FilePath -> Text -> EditorError
+editorErrorNoPos filename editorMessage = EditorError
+  { editorPos = Text.Megaparsec.Pos.initialPos filename
+  , editorMessage }
+
 
 parseErrorToEditorError :: ParseError -> EditorError
 parseErrorToEditorError pe = EditorError
@@ -56,27 +67,78 @@ editorErrorsToJson ees =
         where pos = editorPos ee
   in Json.encodingToLazyByteString $ Json.list one ees
 
+usage :: [Char]
+usage = mconcat
+  [ "Usage:\n"
+  , "  dhall-flycheck <filename>\n"
+  , "  dhall-flycheck --forever\n"
+  , "\n"
+  , "Checks dhall code in three consecutive steps, first"
+  , " syntax, then imports, then types.\n"
+  , "If any step fails, it returns a JSON that can be used by an"
+  , " in-editor checker.\n"
+  , "\n"
+  , "In the first form, it accepts a filename and does one single check\n"
+  , "In the second form, it accepts a filename per line on stdin"
+  , " and outputs one JSON per line on stdout (line-buffered).\n"
+  , "It the second form, it caches imports to speed up checks.\n"
+  ]
+
 main :: IO ()
 main = do
   args <- System.Environment.getArgs
-  let filename = case args of
-        [] -> error "no args"
-        [fn] -> fn
-        _ -> error "only one arg!"
-
-  contents <- Data.Text.IO.readFile filename
-
-  errsE <- editorErrors filename contents
-  case errsE of
-    (Right _) -> return ()
-    (Left errs) ->
-      LBS.putStr
-        $ editorErrorsToJson $ toList errs
-  return ()
+  let usg = System.Exit.die usage
+  case args of
+        [] -> usg
+        ["--help"] -> usg
+        ["--forever"] -> absurd <$> checkForever
+        [fn] -> checkOne fn
+        _ -> usg
 
   where
-    editorErrors :: FilePath -> Text -> IO (Either (Seq EditorError) ())
-    editorErrors sourceFileName sourceContent = runExceptT $ do
+    -- | check file, print errors, return
+    checkOne :: FilePath -> IO ()
+    checkOne filename = do
+      checkFile filename >>= \case
+        Nothing -> pure ()
+        Just errs -> LBSC.putStrLn $ editorErrorsToJson $ toList errs
+
+    -- | loop forever, get filenames from stdin,
+    -- print one error list per input to stdout
+    checkForever :: IO Void
+    checkForever = do
+      -- set up stdin and stdout
+      SIO.hSetBuffering SIO.stdout SIO.LineBuffering
+      SIO.hSetBuffering SIO.stdin SIO.LineBuffering
+      -- we read filenames, which are Bytestrings
+      SIO.hSetBinaryMode SIO.stdin True
+      -- the json is also output as Bytestring
+      SIO.hSetBinaryMode SIO.stdout True
+
+      forever $ do
+        filename <- SIO.hGetLine SIO.stdin
+        checkFile filename >>= \case
+          Nothing -> LBSC.putStrLn ""
+          Just errs -> LBSC.putStrLn $ editorErrorsToJson $ toList errs
+
+    -- | Reads a file, can throw a decoding error first
+    checkFile :: FilePath -> IO (Maybe (Seq EditorError))
+    checkFile filename = do
+      Data.Text.Encoding.decodeUtf8' <$> BS.readFile filename >>= \case
+          Left _ -> pure $ Just $ Data.Sequence.singleton
+            $ editorErrorNoPos filename
+              $  "Cannot decode "
+              <> (Data.Text.pack filename)
+              <> ", it is not valid UTF-8"
+          Right c -> do
+            editorErrors filename c
+
+    may :: Either e () -> Maybe e
+    may (Left e) = Just e
+    may (Right ()) = Nothing
+
+    editorErrors :: FilePath -> Text -> IO (Maybe (Seq EditorError))
+    editorErrors sourceFileName sourceContent = fmap may $ runExceptT $ do
       let wrap = ExceptT . pure
       parsed <- wrap $ doParse sourceFileName sourceContent
       imports <- ExceptT $ doImports sourceFileName parsed
@@ -98,20 +160,17 @@ main = do
       >>= return . first (Data.Sequence.singleton . fromMissingImports)
       where
         fromMissingImports (Dhall.Import.MissingImports es) =
-          EditorError
-            -- TODO: actually find out correct positions of failing
-            -- imports by stepping through the AST and trying to load
-            -- each import in order.
-            -- see https://github.com/dhall-lang/dhall-haskell/issues/561
-            { editorPos = Text.Megaparsec.Pos.initialPos filename
-            , editorMessage =
-                Data.Foldable.foldMap
-                  (\e ->
-                     "\n"
-                     <> removeEscapes (Data.Text.pack (show e))
-                     <> "\n")
-                  es
-            }
+          -- TODO: actually find out correct positions of failing
+          -- imports by stepping through the AST and trying to load
+          -- each import in order.
+          -- see https://github.com/dhall-lang/dhall-haskell/issues/561
+          editorErrorNoPos filename
+            $ Data.Foldable.foldMap
+                (\e ->
+                    "\n"
+                    <> removeEscapes (Data.Text.pack (show e))
+                    <> "\n")
+                es
 
     doTypeCheck :: (Dhall.Core.Expr Dhall.Parser.Src Dhall.TypeCheck.X)
                 -> Either (Seq EditorError) ()
