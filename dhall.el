@@ -24,7 +24,8 @@ checked."
 See URL `https://dhall-lang.org'."
   :command ("dhall-flycheck" source)
   :error-parser flycheck-dhall-parse-errors
-  :modes dhall-mode
-)
+  :modes dhall-mode)
+
 (add-to-list 'flycheck-checkers 'dhall)
 
+(add-hook 'dhall-mode-hook 'flycheck-mode)
