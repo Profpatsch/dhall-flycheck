@@ -22,11 +22,15 @@ library
     , bytestring
     , prettyprinter
     , mtl
+    , transformers
+    , lens-family-core
+    , dotgen
+    , exceptions
   default-language: Haskell2010
 
 executable dhall-flycheck
   main-is: Main.hs
-  ghc-options: -Wall
+  ghc-options: -Wall -Wextra
   build-depends:
       base
     , dhall-flycheck

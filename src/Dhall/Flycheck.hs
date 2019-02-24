@@ -1,11 +1,20 @@
-{-# language NamedFieldPuns, OverloadedStrings, LambdaCase #-}
+{-# language NamedFieldPuns, OverloadedStrings, LambdaCase, BangPatterns #-}
 module Dhall.Flycheck where
 
 import qualified Dhall.Core
+import Dhall.Core
+  ( Expr(Note)
+  , Import(Import), ImportType(Missing, Env, Local, Remote)
+  , ImportHashed(ImportHashed), importHashed, importType
+  )
 import qualified Dhall.Import
 import qualified Dhall.Parser
+import Dhall.Parser (Src)
 import qualified Dhall.TypeCheck
-import qualified Data.Text.IO
+import Dhall.TypeCheck (X)
+import qualified Data.Map.Strict as Data.Map
+import Data.Map.Strict (Map)
+import qualified Text.Dot
 import qualified Data.Text.Encoding
 import qualified System.Environment
 import qualified System.IO as SIO
@@ -18,8 +27,10 @@ import Data.Text (Text)
 import qualified Data.Text
 import Data.Foldable
 import Data.Bifunctor (first, bimap)
-import Control.Monad.Except (ExceptT(..), runExceptT, forever)
+import Control.Monad.Except (ExceptT(..), runExceptT)
+import qualified Control.Monad.Trans.State.Strict as State
 import qualified Control.Exception
+import Control.Monad.Trans.Class (lift)
 import qualified Data.Sequence
 import Data.Sequence (Seq)
 import Data.Void
@@ -28,6 +39,7 @@ import qualified Data.Aeson.Encoding as Json
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import qualified Data.ByteString as BS
+import qualified Lens.Family as Lens
 
 data ParseError = ParseError
   { parseErrorPos :: Text.Megaparsec.Pos.SourcePos
@@ -84,6 +96,11 @@ usage = mconcat
   , "It the second form, it caches imports to speed up checks.\n"
   ]
 
+type Cache = Map Import (Text.Dot.NodeId, Expr Src X)
+
+emptyCache :: Cache
+emptyCache = mempty
+
 main :: IO ()
 main = do
   args <- System.Environment.getArgs
@@ -99,9 +116,8 @@ main = do
     -- | check file, print errors, return
     checkOne :: FilePath -> IO ()
     checkOne filename = do
-      checkFile filename >>= \case
-        Nothing -> pure ()
-        Just errs -> LBSC.putStrLn $ editorErrorsToJson $ toList errs
+      _ <- printCheckResult (pure ()) emptyCache filename
+      pure ()
 
     -- | loop forever, get filenames from stdin,
     -- print one error list per input to stdout
@@ -115,48 +131,119 @@ main = do
       -- the json is also output as Bytestring
       SIO.hSetBinaryMode SIO.stdout True
 
-      forever $ do
-        filename <- SIO.hGetLine SIO.stdin
-        checkFile filename >>= \case
-          Nothing -> LBSC.putStrLn ""
-          Just errs -> LBSC.putStrLn $ editorErrorsToJson $ toList errs
+      -- endless loop IO action, feeding previous result
+      let foreverFeed feed act = do
+            !newFeed <- act feed
+            foreverFeed newFeed act
+
+      foreverFeed emptyCache $ \cache -> do
+        newCache <- SIO.hGetLine SIO.stdin
+          >>= printCheckResult (LBSC.putStrLn "") cache
+        -- we don’t want to keep all imports in the memory cache,
+        -- only a certain (expensive) subset
+        pure $ Data.Map.filterWithKey (\imp _ -> cacheImportPred imp) newCache
+
+    -- | Predicate that returns whether an import should be
+    -- | cached in-memory.
+    cacheImportPred :: Import -> Bool
+    cacheImportPred
+      (Import { importHashed = ImportHashed { importType } })
+      = case importType of
+          -- we always cache remote urls, no matter whether they
+          -- are fixed or not. If the user wants to re-download
+          -- them, they should restart the dhall-flycheck process.
+          Remote _ -> True
+          Missing -> False
+          Env _ -> False
+          -- TODO: investigate whether hashing the file contents
+          -- of local files speeds up things
+          Local _ _ -> False
+
+    -- | check for filename and print json to stdout
+    printCheckResult
+      :: IO ()
+      -- ^ what to do when there was no error
+      -> Cache
+      -- ^ in-memory cache of imports
+      -> FilePath
+      -> IO Cache
+      -- ^ the new import cache
+    printCheckResult noError cache filename = do
+      State.runStateT (checkFile filename) cache
+        >>= \(res, newCache) -> do
+          case res of
+            Nothing -> noError
+            Just errs -> LBSC.putStrLn $ editorErrorsToJson $ toList errs
+          pure newCache
 
     -- | Reads a file, can throw a decoding error first
-    checkFile :: FilePath -> IO (Maybe (Seq EditorError))
+    checkFile :: FilePath
+              -> State.StateT Cache IO (Maybe (Seq EditorError))
     checkFile filename = do
-      Data.Text.Encoding.decodeUtf8' <$> BS.readFile filename >>= \case
+      lift (Data.Text.Encoding.decodeUtf8' <$> BS.readFile filename) >>= \case
           Left _ -> pure $ Just $ Data.Sequence.singleton
             $ editorErrorNoPos filename
               $  "Cannot decode "
               <> (Data.Text.pack filename)
               <> ", it is not valid UTF-8"
-          Right c -> do
-            editorErrors filename c
+          Right contents -> do
+            oldCache <- State.get
+            State.mapStateT
+              -- this is a bit confused, rebasing ExceptT to Maybe,
+              -- and both inside of StateT …
+              (\ext -> runExceptT ext >>= \case
+                  Left errs -> pure (Just errs, oldCache)
+                  Right ((), cache) -> pure (Nothing, cache))
+              (editorErrors filename contents)
 
-    may :: Either e () -> Maybe e
-    may (Left e) = Just e
-    may (Right ()) = Nothing
-
-    editorErrors :: FilePath -> Text -> IO (Maybe (Seq EditorError))
-    editorErrors sourceFileName sourceContent = fmap may $ runExceptT $ do
-      let wrap = ExceptT . pure
+    -- | Do syntax check, imports and type check and collect
+    -- all errors and a cache of imported files
+    editorErrors :: FilePath
+                 -- ^ name of source file
+                 -> Text
+                 -- ^ contents of source file
+                 -> State.StateT Cache (ExceptT (Seq EditorError) IO) ()
+                 -- ^ Possible errors and updated import cache
+    editorErrors sourceFileName sourceContent = do
+      let wrap = lift . ExceptT . pure
       parsed <- wrap $ doParse sourceFileName sourceContent
-      imports <- ExceptT $ doImports sourceFileName parsed
+      imports <- State.StateT
+        (\oldCache -> ExceptT $ doImports sourceFileName oldCache parsed)
       wrap $ doTypeCheck imports
 
+    -- | parse the file
     doParse :: FilePath -> Text
             -> Either (Seq EditorError)
-                 (Dhall.Core.Expr Dhall.Parser.Src Dhall.Core.Import)
+                 (Expr Src Import)
     doParse filename contents =
       first (fmap parseErrorToEditorError . convertMegaParseErrors)
         $ Dhall.Parser.exprFromText filename contents
 
+    -- | Like Dhall.Import.load, but initialized with a cache
+    -- of all imported files we’ve loaded (from disk or network)
+    -- in previous runs of the checker.
+    -- This considerably speeds up the checking process by about
+    -- one order of magnitude for locally cached files and two
+    -- orders of magnitude for network files.
+    loadWithPreviousCache
+      :: Cache -> Expr Src Import -> IO (Expr Src X, Cache)
+    loadWithPreviousCache previousCache expression = do
+      (newExpression, newCache) <-
+        State.runStateT
+          (Dhall.Import.loadWith expression)
+          (Dhall.Import.emptyStatus "."
+            Lens.& Dhall.Import.cache Lens..~ previousCache)
+      pure (newExpression, newCache Lens.^. Dhall.Import.cache)
+
+    -- | Collect import errors and use the in-memory cache.
     doImports :: FilePath
-              -> (Dhall.Core.Expr Dhall.Parser.Src Dhall.Core.Import)
+              -> Cache
+              -> (Expr Dhall.Parser.Src Import)
               -> IO (Either (Seq EditorError)
-                   (Dhall.Core.Expr Dhall.Parser.Src Dhall.TypeCheck.X))
-    doImports filename parsed = do
-      Control.Exception.try $ Dhall.Import.load parsed
+                   (Expr Dhall.Parser.Src Dhall.TypeCheck.X, Cache))
+    doImports filename oldCache parsed = do
+      Control.Exception.try $ do
+        loadWithPreviousCache oldCache parsed
       >>= return . first (Data.Sequence.singleton . fromMissingImports)
       where
         fromMissingImports (Dhall.Import.MissingImports es) =
@@ -172,7 +259,8 @@ main = do
                     <> "\n")
                 es
 
-    doTypeCheck :: (Dhall.Core.Expr Dhall.Parser.Src Dhall.TypeCheck.X)
+    -- | Collect type check errors.
+    doTypeCheck :: (Expr Dhall.Parser.Src Dhall.TypeCheck.X)
                 -> Either (Seq EditorError) ()
     doTypeCheck dhallExpr =
       bimap
@@ -188,6 +276,7 @@ removeEscapes =
   . Data.Text.replace "\ESC[1;31m" ""
 
 -- TODO: long messages?
+-- | Convert type error messages to something we can use.
 typeErrorToEditorError
   :: Dhall.TypeCheck.TypeError Dhall.Parser.Src Dhall.TypeCheck.X
   -> EditorError
@@ -195,7 +284,7 @@ typeErrorToEditorError (Dhall.TypeCheck.TypeError context expr typeMessage) =
   EditorError { editorPos, editorMessage }
   where
     (editorPos, unNotedExpr) = case expr of
-      (Dhall.Core.Note
+      (Note
         -- TODO: use the whole span instead of just the
         -- initial SrcPos.
         (Dhall.Parser.Src from _to _text) unNoted) -> (from, unNoted)
@@ -215,7 +304,7 @@ typeErrorToEditorError (Dhall.TypeCheck.TypeError context expr typeMessage) =
               , Dhall.TypeCheck.typeMessage
               , Dhall.TypeCheck.current = unNotedExpr }
 
-
+-- | Convert parser errors to something we can use.
 convertMegaParseErrors
   :: Dhall.Parser.ParseError
   -> Seq ParseError
