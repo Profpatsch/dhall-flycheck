@@ -1,11 +1,11 @@
 module Dhall.Flycheck.ImportLocation where
 
-import Dhall.Core
-import Dhall.Parser
-import Dhall.Import
-import Data.Sequence (Seq)
-import qualified Data.Sequence
-import Control.Exception (catch)
+-- import Dhall.Core
+-- import Dhall.Parser
+-- import Dhall.Import
+-- import Data.Sequence (Seq)
+-- import qualified Data.Sequence
+-- import Control.Exception (catch)
 
 -- badImports :: Expr Src Import -> IO (Seq Dhall.Parser.Src)
 -- badImports expr = case expr of
