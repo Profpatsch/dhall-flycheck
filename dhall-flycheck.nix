@@ -1,5 +1,6 @@
 { mkDerivation, aeson, base, bytestring, containers, dhall
-, megaparsec, stdenv, text
+, exceptions, lens-family-core, megaparsec, mtl, prettyprinter
+, stdenv, text, transformers
 }:
 mkDerivation {
   pname = "dhall-flycheck";
@@ -7,10 +8,10 @@ mkDerivation {
   src = ./.;
   isLibrary = true;
   isExecutable = true;
-  executableHaskellDepends = [
-    aeson base bytestring containers dhall megaparsec text
+  libraryHaskellDepends = [
+    aeson base bytestring containers dhall exceptions lens-family-core
+    megaparsec mtl prettyprinter text transformers
   ];
-  doHaddock = false;
-  license = "unknown";
-  hydraPlatforms = stdenv.lib.platforms.none;
+  executableHaskellDepends = [ base ];
+  license = stdenv.lib.licenses.bsd3;
 }

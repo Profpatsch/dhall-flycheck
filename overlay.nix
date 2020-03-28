@@ -27,7 +27,9 @@ let
             hscolour
             (hoogleLocal {
               # TODO: all depends
-              packages = data.executableHaskellDepends;
+              packages =
+                data.libraryHaskellDepends
+                ++ data.executableHaskellDepends;
             })
           ];
         })).env;

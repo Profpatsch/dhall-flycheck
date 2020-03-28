@@ -14,18 +14,17 @@ library
   ghc-options: -Wall
   build-depends:
       base
-    , dhall
-    , megaparsec
-    , text
-    , containers
     , aeson
     , bytestring
-    , prettyprinter
-    , mtl
-    , transformers
-    , lens-family-core
-    , dotgen
+    , containers
+    , dhall
     , exceptions
+    , lens-family-core
+    , megaparsec
+    , mtl
+    , prettyprinter
+    , text
+    , transformers
   default-language: Haskell2010
 
 executable dhall-flycheck

@@ -9,12 +9,11 @@ import Dhall.Core
   )
 import qualified Dhall.Import
 import qualified Dhall.Parser
+import qualified Dhall.Map
 import Dhall.Parser (Src)
 import qualified Dhall.TypeCheck
-import Dhall.TypeCheck (X)
-import qualified Data.Map.Strict as Data.Map
-import Data.Map.Strict (Map)
-import qualified Text.Dot
+import Data.Function ((&))
+import Data.Maybe (mapMaybe)
 import qualified Data.Text.Encoding
 import qualified System.Environment
 import qualified System.IO as SIO
@@ -96,7 +95,7 @@ usage = mconcat
   , "It the second form, it caches imports to speed up checks.\n"
   ]
 
-type Cache = Map Import (Text.Dot.NodeId, Expr Src X)
+type Cache = Dhall.Map.Map Dhall.Import.Chained Dhall.Import.ImportSemantics
 
 emptyCache :: Cache
 emptyCache = mempty
@@ -118,6 +117,13 @@ main = do
     checkOne filename = do
       _ <- printCheckResult (pure ()) emptyCache filename
       pure ()
+
+    -- | Dhall.Map doesn’t have this atm, so workaround
+    mapMaybeWithKey :: Ord k => (k -> v -> Maybe v) -> Dhall.Map.Map k v -> Dhall.Map.Map k v
+    mapMaybeWithKey f m =
+       Dhall.Map.toList m
+       & mapMaybe (\(k, v) -> (,) <$> pure k <*> f k v)
+       & Dhall.Map.fromList
 
     -- | loop forever, get filenames from stdin,
     -- print one error list per input to stdout
@@ -141,7 +147,7 @@ main = do
           >>= printCheckResult (LBSC.putStrLn "") cache
         -- we don’t want to keep all imports in the memory cache,
         -- only a certain (expensive) subset
-        pure $ Data.Map.filterWithKey (\imp _ -> cacheImportPred imp) newCache
+        pure $ mapMaybeWithKey (\imp val -> if cacheImportPred (Dhall.Import.chainedImport imp) then Just val else Nothing) newCache
 
     -- | Predicate that returns whether an import should be
     -- | cached in-memory.
@@ -226,11 +232,12 @@ main = do
     -- one order of magnitude for locally cached files and two
     -- orders of magnitude for network files.
     loadWithPreviousCache
-      :: Cache -> Expr Src Import -> IO (Expr Src X, Cache)
+      :: Cache -> Expr Src Import -> IO (Expr Src Void, Cache)
     loadWithPreviousCache previousCache expression = do
       (newExpression, newCache) <-
         State.runStateT
           (Dhall.Import.loadWith expression)
+          -- TODO: Is "." correct?
           (Dhall.Import.emptyStatus "."
             Lens.& Dhall.Import.cache Lens..~ previousCache)
       pure (newExpression, newCache Lens.^. Dhall.Import.cache)
@@ -240,7 +247,7 @@ main = do
               -> Cache
               -> (Expr Dhall.Parser.Src Import)
               -> IO (Either (Seq EditorError)
-                   (Expr Dhall.Parser.Src Dhall.TypeCheck.X, Cache))
+                   (Expr Dhall.Parser.Src Void, Cache))
     doImports filename oldCache parsed = do
       Control.Exception.try $ do
         loadWithPreviousCache oldCache parsed
@@ -260,7 +267,7 @@ main = do
                 es
 
     -- | Collect type check errors.
-    doTypeCheck :: (Expr Dhall.Parser.Src Dhall.TypeCheck.X)
+    doTypeCheck :: (Expr Dhall.Parser.Src Void)
                 -> Either (Seq EditorError) ()
     doTypeCheck dhallExpr =
       bimap
@@ -278,7 +285,7 @@ removeEscapes =
 -- TODO: long messages?
 -- | Convert type error messages to something we can use.
 typeErrorToEditorError
-  :: Dhall.TypeCheck.TypeError Dhall.Parser.Src Dhall.TypeCheck.X
+  :: Dhall.TypeCheck.TypeError Dhall.Parser.Src Void
   -> EditorError
 typeErrorToEditorError (Dhall.TypeCheck.TypeError context expr typeMessage) =
   EditorError { editorPos, editorMessage }
