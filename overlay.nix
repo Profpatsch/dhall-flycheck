@@ -50,14 +50,15 @@ let
             hself.pretty-simple
             hself.prettyprinter
             hself.th-lift-instances
+            hself.text-manipulate
           ]
           (hlib.overrideCabal hsuper.dhall (old:
-            let version = "1.30.0";
+            let version = "1.31.0";
             in {
               inherit version;
               src = super.fetchurl {
                 url = "mirror://hackage/${old.pname}-${version}.tar.gz";
-                sha256 = "10aagimwa5ycrq15240ff2g7r0n995waa33vaz0h51nqvncrbgpj";
+                sha256 = "0cmpzhkk59dz4nh1ks06fs642jij2w82iyd94hv4bgm408bd361w";
               };
               editedCabalFile = null;
           }));
