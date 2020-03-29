@@ -237,7 +237,7 @@ main = do
       (newExpression, newCache) <-
         State.runStateT
           (Dhall.Import.loadWith expression)
-          -- TODO: Is "." correct?
+          -- TODO: This makes the imports relative to of dhall-flychec!
           (Dhall.Import.emptyStatus "."
             Lens.& Dhall.Import.cache Lens..~ previousCache)
       pure (newExpression, newCache Lens.^. Dhall.Import.cache)
@@ -248,23 +248,50 @@ main = do
               -> (Expr Dhall.Parser.Src Import)
               -> IO (Either (Seq EditorError)
                    (Expr Dhall.Parser.Src Void, Cache))
-    doImports filename oldCache parsed = do
-      Control.Exception.try $ do
-        loadWithPreviousCache oldCache parsed
-      >>= return . first (Data.Sequence.singleton . fromMissingImports)
+    doImports filename oldCache parsed =
+      flip Control.Exception.catches fromDhallError $ do
+        (Right <$> loadWithPreviousCache oldCache parsed)
       where
-        fromMissingImports (Dhall.Import.MissingImports es) =
-          -- TODO: actually find out correct positions of failing
-          -- imports by stepping through the AST and trying to load
-          -- each import in order.
-          -- see https://github.com/dhall-lang/dhall-haskell/issues/561
-          editorErrorNoPos filename
-            $ Data.Foldable.foldMap
-                (\e ->
-                    "\n"
-                    <> removeEscapes (Data.Text.pack (show e))
-                    <> "\n")
-                es
+        h = \editorError -> Left . Data.Sequence.singleton <$> pure editorError
+        -- TODO: actually find out correct positions of failing
+        -- imports by stepping through the AST and trying to load
+        -- each import in order.
+        -- see https://github.com/dhall-lang/dhall-haskell/issues/561
+        -- The dhall tools print the import chain, how do they get this information?
+        fromDhallError =
+          [ Control.Exception.Handler (\(Dhall.Import.ImportResolutionDisabled) ->
+            h $ editorErrorNoPos
+              filename
+              "Import Resolution is disabled yet somewhere (TODO: where?) an import was done")
+          , Control.Exception.Handler (\(Dhall.Import.PrettyHttpException pretty _HttpErrorDyn) ->
+            h $ editorErrorNoPos
+              filename
+              (removeEscapes $ Data.Text.pack pretty))
+          , Control.Exception.Handler (\(Dhall.Import.MissingFile missing) ->
+            h $ editorErrorNoPos
+              filename
+              ("File is missing (TODO: imported from where?): " <> Data.Text.pack missing))
+          , Control.Exception.Handler (\(Dhall.Import.MissingEnvironmentVariable missing) ->
+            h $ editorErrorNoPos
+              filename
+              ("Environment variable is missing (TODO: imported from where?): " <> missing))
+          , Control.Exception.Handler (\(Dhall.Import.MissingImports es) ->
+            h $ editorErrorNoPos filename
+              $ Data.Foldable.foldMap
+                  (\e ->
+                      "\n"
+                      <> removeEscapes (Data.Text.pack (show e))
+                      <> "\n")
+                  es)
+          , Control.Exception.Handler (\(Dhall.Import.HashMismatch {
+                                            Dhall.Import.expectedHash
+                                          , Dhall.Import.actualHash }) ->
+            h $ editorErrorNoPos
+              filename
+              ("Hash mismatch:\n"
+               <> "wanted: " <> (Data.Text.pack $ show expectedHash) <> "\n"
+               <> "got: " <> (Data.Text.pack $ show actualHash)))
+          ]
 
     -- | Collect type check errors.
     doTypeCheck :: (Expr Dhall.Parser.Src Void)
