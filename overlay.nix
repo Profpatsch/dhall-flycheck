@@ -39,8 +39,6 @@ let
   hlib = super.haskell.lib;
   haskellPackages = super.haskellPackages.override {
     overrides = hself: hsuper: {
-      prettyprinter = hself.prettyprinter_1_6_0;
-
       dhall =
         super.lib.flip hlib.addBuildDepends
           [
