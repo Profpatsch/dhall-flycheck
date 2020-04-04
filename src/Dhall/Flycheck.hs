@@ -352,12 +352,12 @@ convertMegaParseErrors dhallParseError =
                   -> Text.Megaparsec.Error.ParseError Text Void
                   -> (Seq ParseError, Text.Megaparsec.PosState Text)
       forPosState (errs, posState) megaError =
-        let (pos, badToken, posState') =
+        let (badToken, posState') =
               Text.Megaparsec.Stream.reachOffset
                 (Text.Megaparsec.Error.errorOffset megaError)
                 posState
             err = ParseError
-              { parseErrorPos = pos
+              { parseErrorPos = Text.Megaparsec.pstateSourcePos posState'
               , parseBadToken = Data.Text.pack badToken
               , parseMessage =
                   Data.Text.pack

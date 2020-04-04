@@ -20,7 +20,7 @@ library
     , dhall
     , exceptions
     , lens-family-core
-    , megaparsec
+    , megaparsec == 8.*
     , mtl
     , prettyprinter
     , text
