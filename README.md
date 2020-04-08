@@ -7,13 +7,26 @@ Dhall support for emacs flycheck mode.
 Right now there is not much in the way of setup.
 
 `dhall.el` contains the definition of a flycheck plugin. Add it to
-your emacs config.
+your emacs config (e.g. by literally pasting it in, I have no clue
+about how emacs packaging works yet).
 
 You need the `dhall-flycheck` exeutable, which takes a source file
 and outputs a json that can be understood by the flycheck parser.
 That’s what the cabal project is for. You can install it via the
-normal `cabal install` mechanism, or by using `cabal2nix` and adding
-it to your NixOS config.
+normal `cabal install` mechanism, or by using the `overlay.nix`
+file in this repo and adding it to your nix config:
+
+```
+  dhall-flycheck =
+    (import "${pkgs.fetchFromGitHub {
+      owner = "Profpatsch";
+      repo = "dhall-flycheck";
+      rev = "<commit id you want>";
+      sha256 = "<sha that nix tells you it expects>";
+    }}/overlay.nix" pkgs pkgs).dhall-flycheck;
+```
+
+You can also use that file as a normal nixpkgs overlay.
 
 ## Why not LSP?
 
