@@ -51,12 +51,12 @@ let
             hself.text-manipulate
           ]
           (hlib.overrideCabal hsuper.dhall (old:
-            let version = "1.31.0";
+            let version = "1.32.0";
             in {
               inherit version;
               src = super.fetchurl {
                 url = "mirror://hackage/${old.pname}-${version}.tar.gz";
-                sha256 = "0cmpzhkk59dz4nh1ks06fs642jij2w82iyd94hv4bgm408bd361w";
+                sha256 = "1imj0bh5365pdizvjbw2wqz0g9hakigf1zm4fr6379qdchxpp90p";
               };
               editedCabalFile = null;
           }));
